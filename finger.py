@@ -2,70 +2,84 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
-# Инициализация медиапайп для распознавания рук
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
+mp_pose = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+detector = mp_pose.Hands(max_num_hands=2, min_detection_confidence=0.7, min_tracking_confidence=0.5)
 
-hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
-cap = cv2.VideoCapture(0)
+video = cv2.VideoCapture(0)
 
-def count_fingers(landmarks):
-    # Определяем, сколько пальцев поднято
-    thumb_up = landmarks[mp_hands.HandLandmark.THUMB_TIP].y < landmarks[mp_hands.HandLandmark.THUMB_IP].y
-    index_finger_up = landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.INDEX_FINGER_PIP].y
-    middle_finger_up = landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_PIP].y
-    ring_finger_up = landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].y < landmarks[mp_hands.HandLandmark.RING_FINGER_PIP].y
-    pinky_finger_up = landmarks[mp_hands.HandLandmark.PINKY_TIP].y < landmarks[mp_hands.HandLandmark.PINKY_PIP].y
+def check_fingers(points, hand_type):
+    count = 0
+    right_hand = (hand_type == "Right")
 
-    return sum([thumb_up, index_finger_up, middle_finger_up, ring_finger_up, pinky_finger_up])
+    thumb_end = points[mp_pose.HandLandmark.THUMB_TIP]
+    thumb_base = points[mp_pose.HandLandmark.THUMB_MCP]
+    if right_hand:
+        thumb_raised = thumb_end.x < thumb_base.x - 0.05
+    else:
+        thumb_raised = thumb_end.x > thumb_base.x + 0.05
+    if thumb_raised:
+        count += 1
 
-def is_fist(landmarks):
-    # Проверка сжатого кулака (если все пальцы близки друг к другу)
-    distances = [
-        np.linalg.norm(np.array([landmarks[mp_hands.HandLandmark.THUMB_TIP].x, landmarks[mp_hands.HandLandmark.THUMB_TIP].y]) - np.array([landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].x, landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].y])),
-        np.linalg.norm(np.array([landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].x, landmarks[mp_hands.HandLandmark.INDEX_FINGER_TIP].y]) - np.array([landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].x, landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].y])),
-        np.linalg.norm(np.array([landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].x, landmarks[mp_hands.HandLandmark.MIDDLE_FINGER_TIP].y]) - np.array([landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].x, landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].y])),
-        np.linalg.norm(np.array([landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].x, landmarks[mp_hands.HandLandmark.RING_FINGER_TIP].y]) - np.array([landmarks[mp_hands.HandLandmark.PINKY_TIP].x, landmarks[mp_hands.HandLandmark.PINKY_TIP].y])),
+    tips = [
+        mp_pose.HandLandmark.INDEX_FINGER_TIP,
+        mp_pose.HandLandmark.MIDDLE_FINGER_TIP,
+        mp_pose.HandLandmark.RING_FINGER_TIP,
+        mp_pose.HandLandmark.PINKY_TIP
+    ]
+    joints = [
+        mp_pose.HandLandmark.INDEX_FINGER_PIP,
+        mp_pose.HandLandmark.MIDDLE_FINGER_PIP,
+        mp_pose.HandLandmark.RING_FINGER_PIP,
+        mp_pose.HandLandmark.PINKY_PIP
     ]
 
-    return all(distance < 0.05 for distance in distances)  # Порог для сжатого кулака
+    for tip, joint in zip(tips, joints):
+        if points[tip].y < points[joint].y:
+            count += 1
 
-while cap.isOpened():
-    ret, frame = cap.read()
-    if not ret:
+    return count
+
+def check_closed(points):
+    distances = [
+        np.linalg.norm([points[mp_pose.HandLandmark.INDEX_FINGER_TIP].x - points[mp_pose.HandLandmark.INDEX_FINGER_MCP].x,
+                        points[mp_pose.HandLandmark.INDEX_FINGER_TIP].y - points[mp_pose.HandLandmark.INDEX_FINGER_MCP].y]),
+        np.linalg.norm([points[mp_pose.HandLandmark.MIDDLE_FINGER_TIP].x - points[mp_pose.HandLandmark.MIDDLE_FINGER_MCP].x,
+                        points[mp_pose.HandLandmark.MIDDLE_FINGER_TIP].y - points[mp_pose.HandLandmark.MIDDLE_FINGER_MCP].y]),
+        np.linalg.norm([points[mp_pose.HandLandmark.RING_FINGER_TIP].x - points[mp_pose.HandLandmark.RING_FINGER_MCP].x,
+                        points[mp_pose.HandLandmark.RING_FINGER_TIP].y - points[mp_pose.HandLandmark.RING_FINGER_MCP].y]),
+        np.linalg.norm([points[mp_pose.HandLandmark.PINKY_TIP].x - points[mp_pose.HandLandmark.PINKY_MCP].x,
+                        points[mp_pose.HandLandmark.PINKY_TIP].y - points[mp_pose.HandLandmark.PINKY_MCP].y])
+    ]
+    return all(d < 0.1 for d in distances)
+
+while video.isOpened():
+    success, image = video.read()
+    if not success:
         break
 
-    # Обработка изображения
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(frame_rgb)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = detector.process(image_rgb)
+    finger_count = 0
 
-    total_fingers = 0
-    
     if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            # Рисование ключевых точек
-            mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            
-            landmarks = hand_landmarks.landmark
-            num_fingers = count_fingers(landmarks)
-            
-            # Проверка сжатого кулака
-            if is_fist(landmarks):
-                num_fingers = 1
+        for i, hand in enumerate(results.multi_hand_landmarks):
+            side = results.multi_handedness[i].classification[0].label
+            landmarks = hand.landmark
 
-            total_fingers += num_fingers
+            if check_closed(landmarks):
+                current_count = 0
+            else:
+                current_count = check_fingers(landmarks, side)
+            finger_count += current_count
 
-    # Убедитесь, что общее количество пальцев не превышает 10
-    total_fingers = min(total_fingers, 10)
+            mp_draw.draw_landmarks(image, hand, mp_pose.HAND_CONNECTIONS)
 
-    # Вывод числа пальцев на экран
-    cv2.putText(frame, f'Fingers: {total_fingers}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.putText(image, f'Fingers: {finger_count}', (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.imshow('Hand Tracking', image)
 
-    # Показываем изображение
-    cv2.imshow('Finger Count', frame)
-
-    if cv2.waitKey(1) & 0xFF == 27:  # Нажмите 'Esc' для выхода
+    if cv2.waitKey(1) & 0xFF == 27:
         break
 
-cap.release()
+video.release()
 cv2.destroyAllWindows()
